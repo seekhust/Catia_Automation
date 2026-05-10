@@ -1,0 +1,82 @@
+Language="VBSCRIPT"
+
+Sub CATMain()
+
+    ' 获取文档对象
+    Dim documents1 As Documents
+    Set documents1 = CATIA.Documents
+
+    ' 新建零件
+    Dim partDocument1 As PartDocument
+    Set partDocument1 = documents1.Add("Part")
+
+    Dim part1 As Part
+    Set part1 = partDocument1.Part
+
+    Dim body1 As Body
+    Set body1 = part1.Bodies.Item("PartBody")
+
+    Dim sketches1 As Sketches
+    Set sketches1 = body1.Sketches 
+
+    Dim originElements1 As OriginElements
+    Set originElements1 = part1.OriginElements
+
+    ' 参考平面
+    Dim reference1 As AnyObject
+    Set reference1 = originElements1.PlaneXY
+
+    ' 定义坐标数据数组（移出循环以提高效率）
+    Dim arrayOfVariantOfDouble1(8)
+    arrayOfVariantOfDouble1(0) = 0.000000
+    arrayOfVariantOfDouble1(1) = 0.000000
+    arrayOfVariantOfDouble1(2) = 0.000000
+    arrayOfVariantOfDouble1(3) = 1.000000
+    arrayOfVariantOfDouble1(4) = 0.000000
+    arrayOfVariantOfDouble1(5) = 0.000000
+    arrayOfVariantOfDouble1(6) = 0.000000
+    arrayOfVariantOfDouble1(7) = 1.000000
+    arrayOfVariantOfDouble1(8) = 0.000000
+
+    Dim x
+    x = 0
+
+    ' --- 开始循环 ---
+    For I = 1 To 5
+        
+        ' 关键修正：每次循环创建一个新的草图对象
+        Dim currentSketch As Sketch
+        Set currentSketch = sketches1.Add(reference1)
+        
+        currentSketch.SetAbsoluteAxisData arrayOfVariantOfDouble1
+        
+        ' 进入草图编辑模式
+        Dim factory2D1 As Factory2D
+        Set factory2D1 = currentSketch.OpenEdition()
+
+        ' 创建圆：圆心坐标随 x 变化。
+        ' 注意：不要再把 CenterPoint 约束到原点，否则 x 的变化会失效。
+        Dim circle2D1 As Circle2D
+        Set circle2D1 = factory2D1.CreateClosedCircle(x, 0.000000, 10.000000)
+
+        ' 退出草图编辑
+        currentSketch.CloseEdition()
+
+        ' 更新零件
+        part1.Update 
+
+        ' 创建凸台特征
+        Dim shapeFactory1 As ShapeFactory
+        Set shapeFactory1 = part1.ShapeFactory
+        
+        Dim pad1 As Pad
+        Set pad1 = shapeFactory1.AddNewPad(currentSketch, 60.000000)
+
+        part1.Update 
+
+        ' 偏置 X 坐标
+        x = x + 25
+    Next
+    ' --- 循环结束 ---
+
+End Sub
