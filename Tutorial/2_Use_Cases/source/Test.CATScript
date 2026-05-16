@@ -1,0 +1,148 @@
+Option Explicit
+
+Sub CATMain()
+    Dim CATIA
+    Dim prodDoc
+    Dim rootProduct
+    Dim outFile
+    Dim folder
+    Dim shellApp
+    Dim xlApp
+    Dim xlBook
+    Dim xlSheet
+    Dim headers
+    Dim i
+    Dim row
+    Dim rng
+
+    On Error Resume Next
+    Set CATIA = GetObject(, "CATIA.Application")
+    If CATIA Is Nothing Then
+        MsgBox "Unable to connect to CATIA. Start CATIA and try again.", vbExclamation
+        Exit Sub
+    End If
+    On Error GoTo 0
+
+    If CATIA.Documents.Count = 0 Then
+        MsgBox "No document is open in CATIA.", vbExclamation
+        Exit Sub
+    End If
+
+    Set prodDoc = CATIA.ActiveDocument
+
+    On Error Resume Next
+    Set rootProduct = prodDoc.Product
+    If Err.Number <> 0 Or rootProduct Is Nothing Then
+        Err.Clear
+        MsgBox "The active document is not a Product. Open a Product document first.", vbExclamation
+        Exit Sub
+    End If
+    On Error GoTo 0
+
+    Set shellApp = CreateObject("Shell.Application")
+    If shellApp Is Nothing Then
+        MsgBox "Unable to open folder selection dialog.", vbCritical
+        Exit Sub
+    End If
+
+    Set folder = shellApp.BrowseForFolder(0, "Select a folder to save the exported Excel file:", 0, 0)
+    If folder Is Nothing Then
+        MsgBox "Export canceled because no folder was selected.", vbInformation
+        Exit Sub
+    End If
+
+    outFile = folder.Self.Path & "\ProductStructure.xlsx"
+
+    Set xlApp = CreateObject("Excel.Application")
+    If xlApp Is Nothing Then
+        MsgBox "Unable to start Excel. Make sure Excel is installed.", vbCritical
+        Exit Sub
+    End If
+
+    xlApp.Visible = False
+    xlApp.DisplayAlerts = False
+
+    Set xlBook = xlApp.Workbooks.Add
+    Set xlSheet = xlBook.Worksheets(1)
+
+    headers = Array("Level", "Name", "Type", "PartNumber", "Quantity", "FullPath")
+    For i = 0 To UBound(headers)
+        xlSheet.Cells(1, i + 1).Value = headers(i)
+    Next
+
+    row = 2
+    CollectProductItems rootProduct, 1, "", xlSheet, row
+
+    Set rng = xlSheet.Range(xlSheet.Cells(1, 1), xlSheet.Cells(row - 1, UBound(headers) + 1))
+    rng.Columns.AutoFit
+    rng.Borders.LineStyle = 1
+    xlSheet.Rows(1).Font.Bold = True
+
+    xlBook.SaveAs outFile
+    xlBook.Close False
+    xlApp.Quit
+
+    shellApp.Open folder.Self.Path
+
+    Set rng = Nothing
+    Set xlSheet = Nothing
+    Set xlBook = Nothing
+    Set xlApp = Nothing
+    Set folder = Nothing
+    Set shellApp = Nothing
+
+    MsgBox "Product structure export completed:" & vbCrLf & outFile, vbInformation
+End Sub
+
+Sub CollectProductItems(prod, level, parentPath, xlSheet, row)
+    Dim prodType
+    Dim partNumber
+    Dim qty
+    Dim path
+    Dim childProd
+    Dim childIndex
+
+    prodType = ""
+    On Error Resume Next
+    prodType = prod.ReferenceProductType
+    If Err.Number <> 0 Then
+        Err.Clear
+    End If
+    On Error GoTo 0
+
+    partNumber = ""
+    On Error Resume Next
+    partNumber = prod.PartNumber
+    If Err.Number <> 0 Then
+        Err.Clear
+    End If
+    On Error GoTo 0
+
+    qty = ""
+    On Error Resume Next
+    qty = prod.Quantity
+    If Err.Number <> 0 Then
+        Err.Clear
+    End If
+    On Error GoTo 0
+
+    If parentPath = "" Then
+        path = prod.Name
+    Else
+        path = parentPath & "\" & prod.Name
+    End If
+
+    xlSheet.Cells(row, 1).Value = level
+    xlSheet.Cells(row, 2).Value = prod.Name
+    xlSheet.Cells(row, 3).Value = prodType
+    xlSheet.Cells(row, 4).Value = partNumber
+    xlSheet.Cells(row, 5).Value = qty
+    xlSheet.Cells(row, 6).Value = path
+
+    row = row + 1
+
+    For childIndex = 1 To prod.Products.Count
+        Set childProd = prod.Products.Item(childIndex)
+        CollectProductItems childProd, level + 1, path, xlSheet, row
+    Next
+End Sub

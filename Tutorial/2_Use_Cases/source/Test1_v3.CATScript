@@ -1,0 +1,557 @@
+Option Explicit
+
+' Test1_v3.CATScript
+' Full copy of Test1 with NormalizeType helper appended
+
+Dim ieProg
+
+Sub CATMain()
+    Dim CATIA
+    Dim prodDoc
+    Dim rootProduct
+    Dim folder
+    Dim shellApp
+    Dim xlApp
+    Dim xlBook
+    Dim xlProg
+    Dim xlData
+    Dim headers
+    Dim i
+    Dim dataRow
+    Dim totalNodes
+    Dim processed
+    Dim filename
+    Dim outFile
+
+    On Error Resume Next
+    Set CATIA = GetObject(, "CATIA.Application")
+    If CATIA Is Nothing Then
+        MsgBox "Unable to connect to CATIA. Start CATIA and try again.", vbExclamation
+        Exit Sub
+    End If
+    On Error GoTo 0
+
+    If CATIA.Documents.Count = 0 Then
+        MsgBox "No document is open in CATIA.", vbExclamation
+        Exit Sub
+    End If
+
+    Set prodDoc = CATIA.ActiveDocument
+    On Error Resume Next
+    Set rootProduct = prodDoc.Product
+    If Err.Number <> 0 Or rootProduct Is Nothing Then
+        Err.Clear
+        MsgBox "The active document is not a Product. Open a Product document first.", vbExclamation
+        Exit Sub
+    End If
+    On Error GoTo 0
+
+    ' Folder selection
+    Set shellApp = CreateObject("Shell.Application")
+    If shellApp Is Nothing Then
+        MsgBox "Unable to open folder selection dialog.", vbCritical
+        Exit Sub
+    End If
+
+    Set folder = shellApp.BrowseForFolder(0, "Select a folder to save the exported Excel file:", 0, 0)
+    If folder Is Nothing Then
+        MsgBox "Export canceled because no folder was selected.", vbInformation
+        Exit Sub
+    End If
+
+    filename = InputBox("Enter output Excel file name (without extension):", "File name", "ProductStructure")
+    If Trim(filename) = "" Then filename = "ProductStructure"
+    outFile = folder.Self.Path & "\" & filename & ".xlsx"
+
+    ' Create visible Excel workbook for progress and data
+    Set xlApp = CreateObject("Excel.Application")
+    If xlApp Is Nothing Then
+        MsgBox "Unable to start Excel. Make sure Excel is installed.", vbCritical
+        Exit Sub
+    End If
+    ' Create progress dialog (Internet Explorer) - visible to user
+    On Error Resume Next
+    Set ieProg = CreateObject("InternetExplorer.Application")
+    If Not ieProg Is Nothing Then
+        ieProg.Visible = True
+        ieProg.Navigate "about:blank"
+        Do While ieProg.Busy Or ieProg.ReadyState <> 4
+            Dim waitUntil
+            waitUntil = Timer + 0.05
+            Do While Timer < waitUntil
+            Loop
+        Loop
+        Dim html
+        html = "<html><head><title>Export Progress</title></head><body>" & _
+               "<h3 id='status'>Starting...</h3>" & _
+               "<div style='font-size:20px;'>Progress: <span id='percent'>0%</span></div>" & _
+               "</body></html>"
+        ieProg.Document.Open
+        ieProg.Document.Write html
+        ieProg.Document.Close
+    End If
+    On Error GoTo 0
+
+    ' Run Excel in background (invisible)
+    xlApp.Visible = False
+    xlApp.DisplayAlerts = False
+
+    Set xlBook = xlApp.Workbooks.Add
+    ' Sheet1: Progress, Sheet2: Data
+    Set xlProg = xlBook.Worksheets(1)
+    xlProg.Name = "Progress"
+    ' Use positional parameter: Add(Before, After, Count, Type)
+    Set xlData = xlBook.Worksheets.Add(, xlProg)
+    xlData.Name = "Data"
+
+    headers = Array("Level", "Name", "Type", "PartNumber", "Quantity", "FullPath")
+    For i = 0 To UBound(headers)
+        xlData.Cells(1, i + 1).Value = headers(i)
+    Next
+
+    dataRow = 2
+    ' First pass: count nodes to compute progress
+    totalNodes = CountNodes(rootProduct)
+    processed = 0
+
+    UpdateProgress xlProg, processed, totalNodes, "Starting export..."
+
+    ' Second pass: write data and update progress
+    TraverseAndWrite rootProduct, 1, "", xlData, dataRow, xlProg, totalNodes, processed
+
+    ' Finalize formatting
+    Dim rng
+    Set rng = xlData.Range(xlData.Cells(1, 1), xlData.Cells(dataRow - 1, UBound(headers) + 1))
+    rng.Columns.AutoFit
+    rng.Borders.LineStyle = 1
+    xlData.Rows(1).Font.Bold = True
+
+    xlBook.SaveAs outFile
+
+    UpdateProgress xlProg, totalNodes, totalNodes, "Completed"
+
+    ' Close progress dialog
+    On Error Resume Next
+    If Not ieProg Is Nothing Then
+        ieProg.Quit
+        Set ieProg = Nothing
+    End If
+    On Error GoTo 0
+
+    ' Open the folder in Explorer
+    shellApp.Open folder.Self.Path
+
+    MsgBox "Export completed:" & vbCrLf & outFile, vbInformation
+
+    ' Cleanup
+    Set rng = Nothing
+    Set xlProg = Nothing
+    Set xlData = Nothing
+    Set xlBook = Nothing
+    Set xlApp = Nothing
+    Set folder = Nothing
+    Set shellApp = Nothing
+End Sub
+
+Function CountNodes(obj)
+    Dim cnt
+    Dim col
+    Dim i
+    cnt = 1 ' count self
+
+    On Error Resume Next
+    Set col = obj.Products
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            cnt = cnt + CountNodes(col.Item(i))
+        Next
+    End If
+    Err.Clear
+
+    Set col = Nothing
+    Set col = Nothing
+    On Error Resume Next
+    Set col = obj.HybridBodies
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            cnt = cnt + CountNodes(col.Item(i))
+        Next
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    Set col = obj.Bodies
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            cnt = cnt + CountNodes(col.Item(i))
+        Next
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    Set col = obj.HybridShapes
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            cnt = cnt + CountNodes(col.Item(i))
+        Next
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    Set col = obj.Sketches
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            cnt = cnt + 1 ' sketch is leaf
+        Next
+    End If
+    Err.Clear
+
+    ' Count features collection if present (Pad, Pocket, Shell...)
+    On Error Resume Next
+    Set col = obj.Features
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            cnt = cnt + 1
+        Next
+    End If
+    Err.Clear
+    CountNodes = cnt
+End Function
+
+Sub TraverseAndWrite(obj, level, parentPath, xlData, ByRef row, xlProg, total, ByRef processed)
+    Dim typ
+    Dim partNo
+    Dim qty
+    Dim path
+    Dim col
+    Dim i
+    Dim child
+
+    typ = GetObjectType(obj)
+
+    partNo = ""
+    On Error Resume Next
+    partNo = obj.PartNumber
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+
+    qty = ""
+    On Error Resume Next
+    qty = obj.Quantity
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+
+    If parentPath = "" Then
+        path = obj.Name
+    Else
+        path = parentPath & "\" & obj.Name
+    End If
+
+    xlData.Cells(row, 1).Value = level
+    xlData.Cells(row, 2).Value = obj.Name
+    xlData.Cells(row, 3).Value = NormalizeType(typ)
+    xlData.Cells(row, 4).Value = partNo
+    xlData.Cells(row, 5).Value = qty
+    xlData.Cells(row, 6).Value = path
+
+    row = row + 1
+    processed = processed + 1
+    UpdateProgress xlProg, processed, total, "Exporting: " & obj.Name
+
+    ' Try to traverse common child collections
+    On Error Resume Next
+    Set col = obj.Products
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, path, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    Set col = obj.HybridBodies
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, path, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    Set col = obj.Bodies
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, path, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    Set col = obj.HybridShapes
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, path, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    Set col = obj.Sketches
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, path, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    ' Try to traverse features inside bodies/hybridbodies
+    On Error Resume Next
+    Set col = obj.Shapes
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, path, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    ' Traverse generic Features collection (Pad, Pocket, Shell, etc.) and collect UDPs/parameters
+    On Error Resume Next
+    Set col = obj.Features
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            Dim fName, fType, fInfo
+            fName = ""
+            fType = ""
+            On Error Resume Next
+            fName = child.Name
+            If Err.Number <> 0 Then Err.Clear
+            On Error Resume Next
+            fType = child.Type
+            If Err.Number <> 0 Then Err.Clear
+            On Error GoTo 0
+
+            xlData.Cells(row, 1).Value = level + 1
+            xlData.Cells(row, 2).Value = fName
+            xlData.Cells(row, 3).Value = NormalizeType(fType)
+            xlData.Cells(row, 4).Value = ""
+            xlData.Cells(row, 5).Value = ""
+            xlData.Cells(row, 6).Value = path & "\" & fName
+            row = row + 1
+            processed = processed + 1
+            UpdateProgress xlProg, processed, total, "Exporting feature: " & fName
+
+            ' Collect UDPs / parameters for this feature
+            Dim udp
+            udp = GetUDPs(child)
+            If Trim(udp) <> "" Then
+                xlData.Cells(row, 2).Value = "  UDP/Params: " & udp
+                row = row + 1
+            End If
+        Next
+    End If
+    Err.Clear
+
+End Sub
+
+Sub UpdateProgress(xlProg, processed, total, status)
+    On Error Resume Next
+    Dim pct
+    If total <= 0 Then
+        pct = 0
+    Else
+        pct = Int((processed / total) * 100)
+    End If
+
+    ' If IE progress dialog exists, update it; otherwise fallback to Excel sheet
+    If Not ieProg Is Nothing Then
+        ieProg.Document.getElementById("status").innerText = status
+        ieProg.Document.getElementById("percent").innerText = pct & "%"
+    Else
+        xlProg.Cells(1, 1).Value = "Status"
+        xlProg.Cells(1, 2).Value = "Percent"
+        xlProg.Cells(2, 1).Value = status
+        xlProg.Cells(2, 2).Value = pct & "%"
+        xlProg.Columns.AutoFit
+    End If
+    Err.Clear
+End Sub
+
+
+Function GetUDPs(obj)
+    Dim out, col, i, it
+    out = ""
+
+    On Error Resume Next
+    ' Try UserRefProperties (product-level custom props)
+    Set col = obj.UserRefProperties
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            On Error Resume Next
+            it = col.Item(i)
+            If Err.Number = 0 Then
+                On Error Resume Next
+                out = out & it.Name & "=" & it.Value & "; "
+                Err.Clear
+            End If
+        Next
+    End If
+    Err.Clear
+
+    ' Try Parameters collection (part parameters)
+    On Error Resume Next
+    Set col = obj.Parameters
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            On Error Resume Next
+            it = col.Item(i)
+            If Err.Number = 0 Then
+                On Error Resume Next
+                out = out & it.Name & "=" & it.Value & "; "
+                Err.Clear
+            End If
+        Next
+    End If
+    Err.Clear
+
+    ' Try Properties (generic)
+    On Error Resume Next
+    Set col = obj.Properties
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            On Error Resume Next
+            it = col.Item(i)
+            If Err.Number = 0 Then
+                On Error Resume Next
+                out = out & it.Name & "=" & it.Value & "; "
+                Err.Clear
+            End If
+        Next
+    End If
+    Err.Clear
+
+    GetUDPs = out
+End Function
+
+
+Function GetObjectType(obj)
+    Dim t
+    t = ""
+    On Error Resume Next
+    ' Try common properties that may expose type information
+    t = obj.Type
+    If Err.Number = 0 And Trim(t) <> "" Then
+        GetObjectType = t
+        Err.Clear
+        Exit Function
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    t = obj.ReferenceProductType
+    If Err.Number = 0 And Trim(t) <> "" Then
+        GetObjectType = t
+        Err.Clear
+        Exit Function
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    ' Some objects expose a ProductType or TypeName-like property
+    t = obj.ProductType
+    If Err.Number = 0 And Trim(t) <> "" Then
+        GetObjectType = t
+        Err.Clear
+        Exit Function
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    ' If this is a Product referencing a Part, try to get referenced object's type
+    Dim refObj
+    Set refObj = Nothing
+    Set refObj = obj.ReferenceProduct
+    If Err.Number = 0 And Not refObj Is Nothing Then
+        t = GetObjectType(refObj)
+        If Trim(t) <> "" Then
+            GetObjectType = "Ref:" & t
+            Err.Clear
+            Exit Function
+        End If
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    ' Fallback: use the Name of the COM class if available
+    t = TypeName(obj)
+    If Err.Number = 0 And Trim(t) <> "" Then
+        GetObjectType = t
+        Err.Clear
+        Exit Function
+    End If
+    Err.Clear
+
+    GetObjectType = "Unknown"
+End Function
+
+Function NormalizeType(t)
+    Dim s
+    s = LCase(Trim(CStr(t)))
+    If s = "" Then
+        NormalizeType = "Unknown"
+        Exit Function
+    End If
+
+    ' Map common type substrings to normalized labels
+    If InStr(s, "pad") > 0 Then
+        NormalizeType = "Pad"
+        Exit Function
+    End If
+    If InStr(s, "pocket") > 0 Then
+        NormalizeType = "Pocket"
+        Exit Function
+    End If
+    If InStr(s, "shell") > 0 Then
+        NormalizeType = "Shell"
+        Exit Function
+    End If
+    If InStr(s, "sketch") > 0 Then
+        NormalizeType = "Sketch"
+        Exit Function
+    End If
+    If InStr(s, "hybridbody") > 0 Or InStr(s, "hybrid body") > 0 Then
+        NormalizeType = "HybridBody"
+        Exit Function
+    End If
+    If InStr(s, "body") > 0 Then
+        NormalizeType = "Body"
+        Exit Function
+    End If
+    If InStr(s, "product") > 0 Then
+        NormalizeType = "Product"
+        Exit Function
+    End If
+    If InStr(s, "part") > 0 Then
+        NormalizeType = "Part"
+        Exit Function
+    End If
+    If InStr(s, "geometrical") > 0 Or InStr(s, "geometrical set") > 0 Then
+        NormalizeType = "GeometricalSet"
+        Exit Function
+    End If
+
+    ' If prefixed Ref: handle that
+    If Left(s,4) = "ref:" Then
+        NormalizeType = NormalizeType(Mid(s,5))
+        Exit Function
+    End If
+
+    ' Fallback: capitalize first letter
+    NormalizeType = UCase(Left(s,1)) & Mid(s,2)
+End Function
