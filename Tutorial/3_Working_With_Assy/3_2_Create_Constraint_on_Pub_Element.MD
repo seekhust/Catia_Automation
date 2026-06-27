@@ -139,3 +139,27 @@ oRootProduct.Update
 ### 简而言之
 
 本用例展示了如何使用宏在已发布的元素上创建和使用约束。
+
+
+
+## 代码测评
+
+1. 代码缺失了关键的定义对象
+在原代码的这一行：
+Set oConstraint1 = oConstraints0.AddBiEltCst(...)
+代码试图调用 oConstraints0 来添加约束，但是整段代码从未定义过 oConstraints0 是什么。
+在 CATIA VBA 中，必须先从装配体获取约束集合，正确的补充代码应该是：
+
+VB.Net
+Dim oConstraints0 As Constraints
+Set oConstraints0 = oRootProduct.Connections("CATIAConstraints")
+如果不加这句，程序运行到添加约束那一行就会直接报错中断。
+
+2. 强依赖特定的文件名和发布名称
+代码中写死了要寻找名为 "Plate.1" 和 "Screw.1" 的实例，并且要求 Plate.1 内部必须有一个名叫 "Top" 的发布，Screw.1 内部必须有一个名叫 "HeadBottom" 的发布。
+如果你当前打开的装配体中，零件名字叫 Part1.1，或者没有提前手动做好这些“发布”，代码在执行 Set oPlate = ... 或 .Publications.Item("Top") 时，找不到对象就会直接崩溃，停止运行。
+
+3. 虚假的替换文件路径
+在替换零件的这一行：
+sDocPath & "\online\CAAScdAsmUseCases\samples\NewScrew.CATPart"
+这是一个只有在安装了达索完整 CAA 帮助文档（且设置了特定的环境变量 sDocPath）的电脑上才存在的本地路径。在普通的 CATIA 环境中，系统找不到这个替换用的螺钉文件。

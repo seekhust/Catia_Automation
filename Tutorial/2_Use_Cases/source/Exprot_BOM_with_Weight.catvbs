@@ -1,0 +1,78 @@
+'=============================================================================
+' 递归函数：下探至最底层零件进行数据提取
+'=============================================================================
+Sub TraverseAssembly(oCurrentNode, xlSheet, ByRef rowNum)
+    Dim childrenNodes
+    Set childrenNodes = oCurrentNode.Products
+    
+    ' 如果没有子节点，说明已经到达最底层的单体零件 (Leaf Node)
+    If childrenNodes.Count = 0 Then
+        
+        Dim partNum, instName, descStr, matStr, massVal, categoryStr
+        
+        ' ---------------------------------------------------------
+        ' 核心修正：防崩溃与断链检测机制
+        ' 先赋予默认值，防止因为读取失败而导致变量为空或沿用上一个零件的数据
+        ' ---------------------------------------------------------
+        partNum = "读取失败 (可能存在断链或文件丢失)"
+        instName = "读取失败"
+        descStr = ""
+        massVal = 0
+        matStr = "未定义"
+        categoryStr = "未知类型"
+        
+        ' 开启容错：接下来的代码如果遇到报错（如找不到PartNumber），将直接跳过不中断程序
+        On Error Resume Next
+        
+        ' 尝试提取基本属性
+        partNum = oCurrentNode.PartNumber
+        instName = oCurrentNode.Name
+        descStr = oCurrentNode.DescriptionRef
+        
+        ' 尝试提取重量 
+        massVal = Round(oCurrentNode.Analyze.Mass, 3) 
+        
+        ' 尝试提取 Added Properties 中的材料标签
+        Dim oRefProps, oProp, i
+        Set oRefProps = oCurrentNode.ReferenceProduct.UserRefProperties
+        
+        If Not oRefProps Is Nothing Then
+            For i = 1 To oRefProps.Count
+                Set oProp = oRefProps.Item(i)
+                If InStr(1, UCase(oProp.Name), "材料") > 0 Or InStr(1, UCase(oProp.Name), "MATERIAL") > 0 Then
+                    matStr = oProp.ValueAsString
+                    Exit For 
+                End If
+            Next
+        End If
+        
+        ' 尝试进行分类
+        If InStr(1, UCase(partNum), "COM-") > 0 Then
+            categoryStr = "外购件/紧固件"
+        ElseIf partNum <> "读取失败 (可能存在断链或文件丢失)" Then
+            categoryStr = "标准件/自制件"
+        End If
+        
+        ' 关闭容错，保持良好的运行环境
+        On Error GoTo 0
+        ' ---------------------------------------------------------
+
+        ' 6. 将抓取的数据填入 Excel 对应行
+        xlSheet.Cells(rowNum, 1).Value = partNum
+        xlSheet.Cells(rowNum, 2).Value = instName
+        xlSheet.Cells(rowNum, 3).Value = descStr
+        xlSheet.Cells(rowNum, 4).Value = matStr
+        xlSheet.Cells(rowNum, 5).Value = massVal
+        xlSheet.Cells(rowNum, 6).Value = categoryStr
+        
+        ' 行号自增，准备写入下一条数据
+        rowNum = rowNum + 1
+        
+    Else
+        ' 如果包含子节点，说明是子装配体，继续向下层级递归
+        Dim j
+        For j = 1 To childrenNodes.Count
+            Call TraverseAssembly(childrenNodes.Item(j), xlSheet, rowNum)
+        Next
+    End If
+End Sub

@@ -1,0 +1,196 @@
+Language="VBSCRIPT"
+
+'=============================================================================
+' 功能: 导出装配体底层零件BOM至Excel
+' 修复: 清洗带有长路径的自定义属性名称，统一共用属性列；更新自制件分类逻辑
+'=============================================================================
+
+Sub CATMain()
+    Dim oDoc 'As Document
+    Set oDoc = CATIA.ActiveDocument
+    
+    If TypeName(oDoc) <> "ProductDocument" Then
+        MsgBox "错误：请在装配体 (Product) 界面下运行此宏！", vbCritical, "格式错误"
+        Exit Sub
+    End If
+
+    Dim oRootProduct 'As Product
+    Set oRootProduct = oDoc.Product
+
+    ' 1. 创建 Excel 应用程序对象
+    Dim xlApp, xlWB, xlSheet
+    On Error Resume Next
+    Set xlApp = CreateObject("Excel.Application")
+    If Err.Number <> 0 Then
+        MsgBox "无法启动 Excel，请检查系统环境。", vbCritical, "系统错误"
+        Exit Sub
+    End If
+    On Error GoTo 0
+
+    xlApp.Visible = True ' 保持前台运行防假死
+    xlApp.DisplayAlerts = False
+
+    ' 2. 弹出选择路径对话框
+    Dim savePath
+    savePath = xlApp.GetSaveAsFilename(oRootProduct.PartNumber & "_BOM_Final.xlsx", "Excel 工作簿 (*.xlsx), *.xlsx", 1, "请选择BOM存储位置并命名")
+    
+    If savePath = "False" Then
+        xlApp.Quit
+        Set xlApp = Nothing
+        Exit Sub
+    End If
+
+    Set xlWB = xlApp.Workbooks.Add
+    Set xlSheet = xlWB.Sheets(1)
+    xlSheet.Name = "BOM_Data"
+
+    ' 3. 写入固定的基础表头
+    xlSheet.Cells(1, 1).Value = "零件号 (Part Number)"
+    xlSheet.Cells(1, 2).Value = "实例号 (Instance Name)"
+    xlSheet.Cells(1, 3).Value = "描述 (Description)"
+    xlSheet.Cells(1, 4).Value = "系统计算密度/kg_m3 (Density)"
+    xlSheet.Cells(1, 5).Value = "重量/kg (Weight)"
+    xlSheet.Cells(1, 6).Value = "分类 (Category)"
+    
+    xlSheet.Rows(1).Font.Bold = True 
+
+    Dim currentRow
+    currentRow = 2 ' 数据从第二行开始写入
+    
+    Dim maxCol
+    maxCol = 6 ' 记录当前表头已占用的最大列数
+
+    ' 4. 调用深度递归函数
+    Call TraverseAssembly(oRootProduct, xlSheet, currentRow, maxCol)
+
+    ' 5. 格式调整：让所有列自适应宽度
+    xlSheet.Cells.EntireColumn.AutoFit 
+    
+    ' 保存
+    xlWB.SaveAs savePath
+    xlApp.DisplayAlerts = True
+    
+    Set xlSheet = Nothing
+    Set xlWB = Nothing
+    Set xlApp = Nothing
+
+    MsgBox "BOM 导出完成！自定义属性已成功合并提取。", vbInformation, "成功"
+End Sub
+
+'=============================================================================
+' 递归函数：下探至最底层零件进行数据提取
+'=============================================================================
+Sub TraverseAssembly(oCurrentNode, xlSheet, ByRef rowNum, ByRef maxCol)
+    Dim childrenNodes
+    Set childrenNodes = oCurrentNode.Products
+    
+    ' 如果没有子节点，说明已经到达最底层的单体零件 (Leaf Node)
+    If childrenNodes.Count = 0 Then
+        
+        Dim partNum, instName, descStr, massVal, volVal, densityVal, categoryStr
+        
+        partNum = "读取失败(断链)"
+        instName = "读取失败"
+        descStr = ""
+        massVal = 0
+        volVal = 0
+        densityVal = 0
+        categoryStr = "未知类型"
+        
+        On Error Resume Next
+        
+        partNum = oCurrentNode.PartNumber
+        instName = oCurrentNode.Name
+        descStr = oCurrentNode.DescriptionRef
+        
+        massVal = oCurrentNode.Analyze.Mass
+        volVal = oCurrentNode.Analyze.Volume
+        
+        If volVal > 0 Then
+            densityVal = Round(massVal / (volVal / 1000000000), 2)
+        Else
+            densityVal = 0
+        End If
+        
+        massVal = Round(massVal, 3)
+        
+        ' ---------------------------------------------------------
+        ' 分类逻辑更新：外购件/紧固件 vs 自制件
+        ' ---------------------------------------------------------
+        If InStr(1, UCase(partNum), "COM-") > 0 Then
+            categoryStr = "外购件/紧固件"
+        ElseIf partNum <> "读取失败(断链)" Then
+            categoryStr = "自制件"
+        End If
+        
+        On Error GoTo 0
+        
+        ' 写入固定的基础列 (1 到 6 列)
+        xlSheet.Cells(rowNum, 1).Value = partNum
+        xlSheet.Cells(rowNum, 2).Value = instName
+        xlSheet.Cells(rowNum, 3).Value = descStr
+        xlSheet.Cells(rowNum, 4).Value = densityVal
+        xlSheet.Cells(rowNum, 5).Value = massVal
+        xlSheet.Cells(rowNum, 6).Value = categoryStr
+        
+        ' ---------------------------------------------------------
+        ' 核心修复：清洗并提取自定义属性
+        ' ---------------------------------------------------------
+        Dim oRefProps, oProp, i, k
+        Dim rawPropName, cleanPropName, propValue, foundCol, slashPos
+        
+        On Error Resume Next 
+        Set oRefProps = oCurrentNode.ReferenceProduct.UserRefProperties
+        
+        If Not oRefProps Is Nothing Then
+            For i = 1 To oRefProps.Count
+                Set oProp = oRefProps.Item(i)
+                rawPropName = oProp.Name
+                propValue = oProp.ValueAsString
+                
+                ' 截取真实的属性名 (例如将 "xxx\Properties\Name" 变成 "Name")
+                cleanPropName = rawPropName
+                slashPos = InStrRev(rawPropName, "\")
+                If slashPos > 0 Then
+                    cleanPropName = Mid(rawPropName, slashPos + 1)
+                End If
+                
+                ' 确保属性名不为空才进行操作
+                If Trim(cleanPropName) <> "" Then
+                    foundCol = 0
+                    
+                    ' 在已有的表头中寻找该共通属性
+                    For k = 7 To maxCol
+                        If xlSheet.Cells(1, k).Value = cleanPropName Then
+                            foundCol = k
+                            Exit For
+                        End If
+                    Next
+                    
+                    ' 如果没找到，说明是新出现的一种属性，新建一列表头
+                    If foundCol = 0 Then
+                        maxCol = maxCol + 1
+                        foundCol = maxCol
+                        xlSheet.Cells(1, foundCol).Value = cleanPropName
+                        xlSheet.Cells(1, foundCol).Font.Bold = True
+                        xlSheet.Cells(1, foundCol).Interior.Color = RGB(230, 230, 230)
+                    End If
+                    
+                    ' 将值写入对应的共通列
+                    xlSheet.Cells(rowNum, foundCol).Value = propValue
+                End If
+            Next
+        End If
+        On Error GoTo 0
+        ' ---------------------------------------------------------
+        
+        rowNum = rowNum + 1
+        
+    Else
+        ' 继续向下层级递归
+        Dim j
+        For j = 1 To childrenNodes.Count
+            Call TraverseAssembly(childrenNodes.Item(j), xlSheet, rowNum, maxCol)
+        Next
+    End If
+End Sub

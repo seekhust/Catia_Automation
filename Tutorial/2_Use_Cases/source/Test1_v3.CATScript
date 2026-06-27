@@ -75,11 +75,15 @@ Sub CATMain()
     If Not ieProg Is Nothing Then
         ieProg.Visible = True
         ieProg.Navigate "about:blank"
-        Do While ieProg.Busy Or ieProg.ReadyState <> 4
+        ' Wait max 2 seconds for IE to load
+        Dim waitCount
+        waitCount = 0
+        Do While (ieProg.Busy Or ieProg.ReadyState <> 4) And waitCount < 40
             Dim waitUntil
             waitUntil = Timer + 0.05
             Do While Timer < waitUntil
             Loop
+            waitCount = waitCount + 1
         Loop
         Dim html
         html = "<html><head><title>Export Progress</title></head><body>" & _
@@ -104,7 +108,7 @@ Sub CATMain()
     Set xlData = xlBook.Worksheets.Add(, xlProg)
     xlData.Name = "Data"
 
-    headers = Array("Level", "Name", "Type", "PartNumber", "Quantity", "FullPath")
+    headers = Array("Level", "IndentedName", "Name", "Type", "PartNumber", "Quantity", "FullPath")
     For i = 0 To UBound(headers)
         xlData.Cells(1, i + 1).Value = headers(i)
     Next
@@ -112,9 +116,10 @@ Sub CATMain()
     dataRow = 2
     ' First pass: count nodes to compute progress
     totalNodes = CountNodes(rootProduct)
+    If totalNodes < 10 Then totalNodes = 10 ' Minimum estimate
     processed = 0
 
-    UpdateProgress xlProg, processed, totalNodes, "Starting export..."
+    UpdateProgress xlProg, processed, totalNodes, "Counting items..."
 
     ' Second pass: write data and update progress
     TraverseAndWrite rootProduct, 1, "", xlData, dataRow, xlProg, totalNodes, processed
@@ -215,6 +220,16 @@ Function CountNodes(obj)
         Next
     End If
     Err.Clear
+
+    ' Count referenced part/node internals if this is a Product with a reference
+    On Error Resume Next
+    Dim refObj
+    Set refObj = Nothing
+    Set refObj = obj.ReferenceProduct
+    If Err.Number = 0 And Not refObj Is Nothing Then
+        cnt = cnt + CountNodes(refObj)
+    End If
+    Err.Clear
     CountNodes = cnt
 End Function
 
@@ -248,15 +263,37 @@ Sub TraverseAndWrite(obj, level, parentPath, xlData, ByRef row, xlProg, total, B
     End If
 
     xlData.Cells(row, 1).Value = level
-    xlData.Cells(row, 2).Value = obj.Name
-    xlData.Cells(row, 3).Value = NormalizeType(typ)
-    xlData.Cells(row, 4).Value = partNo
-    xlData.Cells(row, 5).Value = qty
-    xlData.Cells(row, 6).Value = path
+    xlData.Cells(row, 2).Value = IndentText(level) & obj.Name
+    xlData.Cells(row, 3).Value = obj.Name
+    xlData.Cells(row, 4).Value = NormalizeType(typ)
+    xlData.Cells(row, 5).Value = partNo
+    xlData.Cells(row, 6).Value = qty
+    xlData.Cells(row, 7).Value = path
 
     row = row + 1
     processed = processed + 1
     UpdateProgress xlProg, processed, total, "Exporting: " & obj.Name
+
+    ' Traverse referenced part internals first if this is a Product with a reference
+    On Error Resume Next
+    Dim refObj
+    Set refObj = Nothing
+    Set refObj = obj.ReferenceProduct
+    If Err.Number = 0 And Not refObj Is Nothing Then
+        xlData.Cells(row, 1).Value = level + 1
+        xlData.Cells(row, 2).Value = IndentText(level + 1) & refObj.Name
+        xlData.Cells(row, 3).Value = refObj.Name
+        xlData.Cells(row, 4).Value = NormalizeType(GetObjectType(refObj))
+        xlData.Cells(row, 5).Value = ""
+        xlData.Cells(row, 6).Value = ""
+        xlData.Cells(row, 7).Value = path & "\" & refObj.Name
+        row = row + 1
+        processed = processed + 1
+        UpdateProgress xlProg, processed, total, "Exporting part: " & refObj.Name
+
+        TraverseChildrenOnly refObj, level + 2, path & "\" & refObj.Name, xlData, row, xlProg, total, processed
+    End If
+    Err.Clear
 
     ' Try to traverse common child collections
     On Error Resume Next
@@ -320,6 +357,15 @@ Sub TraverseAndWrite(obj, level, parentPath, xlData, ByRef row, xlProg, total, B
     End If
     Err.Clear
 
+    ' Try part body object if present
+    On Error Resume Next
+    Dim partBody
+    Set partBody = obj.PartBody
+    If Err.Number = 0 And Not partBody Is Nothing Then
+        TraverseAndWrite partBody, level + 1, path, xlData, row, xlProg, total, processed
+    End If
+    Err.Clear
+
     ' Traverse generic Features collection (Pad, Pocket, Shell, etc.) and collect UDPs/parameters
     On Error Resume Next
     Set col = obj.Features
@@ -338,11 +384,12 @@ Sub TraverseAndWrite(obj, level, parentPath, xlData, ByRef row, xlProg, total, B
             On Error GoTo 0
 
             xlData.Cells(row, 1).Value = level + 1
-            xlData.Cells(row, 2).Value = fName
-            xlData.Cells(row, 3).Value = NormalizeType(fType)
-            xlData.Cells(row, 4).Value = ""
+            xlData.Cells(row, 2).Value = IndentText(level + 1) & fName
+            xlData.Cells(row, 3).Value = fName
+            xlData.Cells(row, 4).Value = NormalizeType(fType)
             xlData.Cells(row, 5).Value = ""
-            xlData.Cells(row, 6).Value = path & "\" & fName
+            xlData.Cells(row, 6).Value = ""
+            xlData.Cells(row, 7).Value = path & "\" & fName
             row = row + 1
             processed = processed + 1
             UpdateProgress xlProg, processed, total, "Exporting feature: " & fName
@@ -351,13 +398,138 @@ Sub TraverseAndWrite(obj, level, parentPath, xlData, ByRef row, xlProg, total, B
             Dim udp
             udp = GetUDPs(child)
             If Trim(udp) <> "" Then
-                xlData.Cells(row, 2).Value = "  UDP/Params: " & udp
+                xlData.Cells(row, 2).Value = IndentText(level + 2) & "UDP/Params: " & udp
+                xlData.Cells(row, 3).Value = ""
+                xlData.Cells(row, 4).Value = ""
+                xlData.Cells(row, 5).Value = ""
+                xlData.Cells(row, 6).Value = ""
+                xlData.Cells(row, 7).Value = ""
                 row = row + 1
             End If
         Next
     End If
     Err.Clear
 
+End Sub
+
+Sub TraverseChildrenOnly(obj, level, parentPath, xlData, row, xlProg, total, ByRef processed)
+    Dim col
+    Dim i
+    Dim child
+    Dim partBody
+
+    On Error Resume Next
+    Set col = obj.Products
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, parentPath, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    Set col = obj.HybridBodies
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, parentPath, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    Set col = obj.Bodies
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, parentPath, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    Set col = obj.HybridShapes
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, parentPath, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    On Error Resume Next
+    Set col = obj.Sketches
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, parentPath, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    ' Try to traverse features inside bodies/hybridbodies
+    On Error Resume Next
+    Set col = obj.Shapes
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            TraverseAndWrite child, level + 1, parentPath, xlData, row, xlProg, total, processed
+        Next
+    End If
+    Err.Clear
+
+    ' Try part body object if present
+    On Error Resume Next
+    Set partBody = obj.PartBody
+    If Err.Number = 0 And Not partBody Is Nothing Then
+        TraverseAndWrite partBody, level + 1, parentPath, xlData, row, xlProg, total, processed
+    End If
+    Err.Clear
+
+    ' Traverse generic Features collection (Pad, Pocket, Shell, etc.) and collect UDPs/parameters
+    On Error Resume Next
+    Set col = obj.Features
+    If Err.Number = 0 And Not col Is Nothing Then
+        For i = 1 To col.Count
+            Set child = col.Item(i)
+            Dim fName, fType, fInfo
+            fName = ""
+            fType = ""
+            On Error Resume Next
+            fName = child.Name
+            If Err.Number <> 0 Then Err.Clear
+            On Error Resume Next
+            fType = child.Type
+            If Err.Number <> 0 Then Err.Clear
+            On Error GoTo 0
+
+            xlData.Cells(row, 1).Value = level + 1
+            xlData.Cells(row, 2).Value = IndentText(level + 1) & fName
+            xlData.Cells(row, 3).Value = fName
+            xlData.Cells(row, 4).Value = NormalizeType(fType)
+            xlData.Cells(row, 5).Value = ""
+            xlData.Cells(row, 6).Value = ""
+            xlData.Cells(row, 7).Value = parentPath & "\" & fName
+            row = row + 1
+            processed = processed + 1
+            UpdateProgress xlProg, processed, total, "Exporting feature: " & fName
+
+            ' Collect UDPs / parameters for this feature
+            Dim udp
+            udp = GetUDPs(child)
+            If Trim(udp) <> "" Then
+                xlData.Cells(row, 2).Value = IndentText(level + 2) & "UDP/Params: " & udp
+                xlData.Cells(row, 3).Value = ""
+                xlData.Cells(row, 4).Value = ""
+                xlData.Cells(row, 5).Value = ""
+                xlData.Cells(row, 6).Value = ""
+                xlData.Cells(row, 7).Value = ""
+                row = row + 1
+            End If
+        Next
+    End If
+    Err.Clear
 End Sub
 
 Sub UpdateProgress(xlProg, processed, total, status)
@@ -367,6 +539,7 @@ Sub UpdateProgress(xlProg, processed, total, status)
         pct = 0
     Else
         pct = Int((processed / total) * 100)
+        If pct > 100 Then pct = 100
     End If
 
     ' If IE progress dialog exists, update it; otherwise fallback to Excel sheet
@@ -554,4 +727,11 @@ Function NormalizeType(t)
 
     ' Fallback: capitalize first letter
     NormalizeType = UCase(Left(s,1)) & Mid(s,2)
+End Function
+
+Function IndentText(level)
+    Dim indentCount
+    indentCount = (level - 1) * 3
+    If indentCount < 0 Then indentCount = 0
+    IndentText = String(indentCount, " ")
 End Function

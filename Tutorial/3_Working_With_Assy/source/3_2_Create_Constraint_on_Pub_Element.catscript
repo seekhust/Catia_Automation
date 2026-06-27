@@ -1,0 +1,106 @@
+
+Sub AuditSkeletonPublications()
+    ' 这是一个用于检查骨架模型和子零件发布状态的实用工具
+    
+    Dim oDoc As Document
+    Set oDoc = CATIA.ActiveDocument
+    
+    ' 1. 安全检查：确保当前处于装配体环境
+    If TypeName(oDoc) <> "ProductDocument" Then
+        MsgBox "请在 Product (装配体) 界面运行此宏！", vbExclamation, "环境错误"
+        Exit Sub
+    End If
+    
+    Dim oRoot As Product
+    Set oRoot = oDoc.Product
+    Dim oPublications As Publications
+    Dim msg As String
+    msg = "当前装配体 [" & oRoot.PartNumber & "] 中的发布元素：" & vbCrLf & String(40, "-") & vbCrLf
+    
+    ' 2. 遍历装配体下的所有第一层级零件
+    Dim i As Integer
+    For i = 1 To oRoot.Products.Count
+        Dim oChild As Product
+        Set oChild = oRoot.Products.Item(i)
+        msg = msg & "零件: " & oChild.Name & vbCrLf
+        
+        ' 3. 容错提取：尝试获取发布集合
+        On Error Resume Next
+        Set oPublications = oChild.Publications
+        On Error GoTo 0
+        
+        ' 4. 读取并记录发布元素
+        If Not oPublications Is Nothing Then
+            If oPublications.Count > 0 Then
+                Dim j As Integer
+                For j = 1 To oPublications.Count
+                    msg = msg & "  -> [发布项 " & j & "]: " & oPublications.Item(j).Name & vbCrLf
+                Next
+            Else
+                msg = msg & "  -> (无发布元素)" & vbCrLf
+            End If
+        Else
+            msg = msg & "  -> (无法读取发布数据)" & vbCrLf
+        End If
+        
+        msg = msg & vbCrLf
+    Next
+    
+    ' 5. 输出结果
+    MsgBox msg, vbInformation, "骨架发布审计报告"
+End Sub
+
+'    --------------------------
+  ' 获取不同的产品 (Products)
+  ' --------------------------
+  Dim oRootProduct As Product
+  Set oRootProduct=CATIA.ActiveDocument.Product
+  
+  Dim oPlate As Product
+  Set oPlate = CATIA.ActiveDocument.Product.Products.Item  ( "Plate.1" ) 
+  
+  Dim oScrew1 As Product
+  Set oScrew1 = CATIA.ActiveDocument.Product.Products.Item  ( "Screw.1" ) 
+  
+  Dim oScrew2 As Product
+  Set oScrew2 = CATIA.ActiveDocument.Product.Products.Item  ( "Screw.2" ) 
+
+    ' --------------------------------------
+' 在底板的顶面和螺钉头部的底面之间创建偏移约束 (offset constraint)
+' --------------------------------------
+set oPlatePub = oPlate.Publications.Item("Top")
+Set oPlateRef = oPlatePub.Valuation
+
+'  ---> Plate/Top Screw1/HeadBottom 
+Set oScrewPub = oScrew1.Publications.Item("HeadBottom")
+Set oScrewRef = oScrewPub.Valuation
+
+Dim oConstraints0 As Constraints
+Set oConstraints0 = oRootProduct.Connections("CATIAConstraints")
+
+Dim oConstraint1 As Constraint
+Set oConstraint1 = oConstraints0.AddBiEltCst  ( catCstTypeDistance, oPlateRef, oScrewRef ) 
+
+oConstraint1.Dimension.Value = 2.000000
+oConstraint1.Orientation = catCstOrientOpposite
+
+ '--------------------------------------
+' 更新产品 (Product) ..
+' --------------------------------------
+oRootProduct.Update
+
+MsgBox "Click OK to replace the screw by another standard screw ..." 
+
+' --------------------------------------
+' 用另一个螺钉替换该螺钉：在已发布元素上的约束会被自动重新连接 ...
+' --------------------------------------
+Set oScrew1 = oRootProduct.Products.ReplaceComponent ( _
+      oScrew1,                                                         _
+      sDocPath & "\online\CAAScdAsmUseCases\samples\NewScrew.CATPart", _
+      True)
+
+' --------------------------------------
+' 使用新零件更新产品 (Product)
+' --------------------------------------
+oRootProduct.Update 
+
